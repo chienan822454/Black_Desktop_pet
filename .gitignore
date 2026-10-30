@@ -1,0 +1,4 @@
+# Error logs the pet writes only when something goes wrong
+BlackPet_Error_*.txt
+# Shortcuts that each PC makes for itself
+*.lnk

@@ -1,0 +1,31 @@
+﻿小黑桌寵：打不開的時候怎麼辦
+================================
+
+按兩下 START_Black.cmd 後，如果黑色視窗說 [Cannot start]，請看下面跟你的情況一樣的那一段。
+
+【一】說 BlackPet.ps1 是「downloaded from the internet」（從網路下載的檔案）
+從 GitHub 下載的 ZIP、電子郵件、Teams 或瀏覽器下載的檔案，Windows 都會先擋住。只要做一次：
+  1. 關掉黑色的視窗。
+  2. 在小黑的資料夾裡，對 BlackPet.ps1 按右鍵 →「內容」。
+  3. 在「一般」分頁的最下面，勾選「解除封鎖」，再按「確定」。
+  4. 再按兩下 START_Black.cmd。
+小技巧：如果還沒解壓縮，先對 ZIP 檔做一樣的「解除封鎖」再解壓縮，裡面的檔案就都不會被擋。
+找不到「解除封鎖」？代表這台電腦不允許，小黑不會想辦法繞過去。
+請改用 OneDrive 同步到這台電腦的資料夾，或詢問公司的 IT。
+
+【二】說這台電腦的 PowerShell 只能執行有簽章的指令碼（block unsigned scripts）
+這是電腦管理者的設定，小黑不會去改它。
+如果是公司的電腦，請聯絡公司的 IT。
+
+【三】說 PowerShell 被裝置管理鎖住了（locked down）
+這是公司的安全規定，小黑不會繞過它。請聯絡公司的 IT。
+
+【四】說找不到 Windows PowerShell
+這台電腦沒有 Windows PowerShell，小黑沒辦法在這台電腦上執行。
+
+請不要為了讓小黑跑起來而關掉或繞過任何安全設定
+（例如修改 PowerShell 的執行原則、用 Bypass、或用系統管理員身分執行）。
+小黑不需要系統管理員權限，也不會更改任何 Windows 設定。
+
+想看錯誤訊息：在命令提示字元執行「START_Black.cmd diag」，視窗會一直開著並顯示錯誤；
+錯誤也會寫在小黑資料夾裡 BlackPet_Error_ 開頭的文字檔。
