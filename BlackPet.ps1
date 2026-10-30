@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 # =============================================================================
-# 小黑桌寵 V1.0.0 - 小黑, a black Taiwanese dog desktop pet
+# 小黑桌寵 V1.0.1 - 小黑, a black Taiwanese dog desktop pet
 #   小黑 is a shy, sleepy and cuddly black Taiwanese mixed-breed dog who lives on the desktop.
 #   PowerShell 5.1 + Windows Forms, all in this one file; START_Black.cmd starts it.
 #   Safety:
@@ -19,7 +19,7 @@
 # =============================================================================
 param([string]$UpdateMode = '', [string]$UpdateDir = '', [int]$WaitPid = 0)
 $ErrorActionPreference = 'Stop'
-$script:appVersion = 'V1.0.0'
+$script:appVersion = 'V1.0.1'
 $script:appTitle = '小黑桌寵 ' + $script:appVersion
 
 # =============================================================================
@@ -289,7 +289,7 @@ $script:idleSleepTicks = 10000    # 10 minutes without any attention: falls asle
 $script:nightAwakeTicks = 2000    # at night: 2 minutes without attention and he goes (back) to sleep
 $script:moodDecayTicks = 15000    # mood: a little lower for every 15 minutes without attention
 # Speeds in pixels per tick for a 250 px window at 100 % (multiplied by Get-PetUnit for other sizes and DPI).
-$script:walkSpeed = 4.0
+$script:walkSpeed = 4.6
 $script:runSpeed = 10.0
 $script:summonSpeed = 12.0
 $script:flingMinSpeed = 20.0      # let go faster than this: thrown
@@ -313,7 +313,7 @@ $script:sizeChoices = @(130, 180, 250, 320, 410)
 # Pictures: pics\<name>.png, 768 x 768, alpha 0 or 255, facing right (mirrored when he faces left).
 # A missing picture is shown as the first one of its list that is there (checked again every 30 s while
 # pictures are missing, for example while OneDrive is still syncing them).
-# Walking and running are used only when all four pictures of the cycle are there.
+# Walking (8 pictures) and running (4 pictures) are used only when all pictures of the cycle are there.
 # -----------------------------------------------------------------------------
 $script:frameChainBase = [ordered]@{
     'stand_00'     = @('stand_00')
@@ -327,6 +327,10 @@ $script:frameChainBase = [ordered]@{
     'walk_01'      = @('walk_01', 'stand_00')
     'walk_02'      = @('walk_02', 'stand_00')
     'walk_03'      = @('walk_03', 'stand_00')
+    'walk_04'      = @('walk_04', 'stand_00')
+    'walk_05'      = @('walk_05', 'stand_00')
+    'walk_06'      = @('walk_06', 'stand_00')
+    'walk_07'      = @('walk_07', 'stand_00')
     'run_00'       = @('run_00', 'walk_00', 'stand_00')
     'run_01'       = @('run_01', 'walk_01', 'stand_00')
     'run_02'       = @('run_02', 'walk_02', 'stand_00')
@@ -673,12 +677,16 @@ function Import-DogPictures([bool]$first) {
     # A walking or running cycle with a picture missing would stutter: then the whole cycle uses the fallback.
     $walkAll = $true
     $runAll = $true
-    foreach ($k in 0..3) {
+    foreach ($k in 0..7) {
         if (-not $script:frameFile.ContainsKey('walk_0' + $k)) { $walkAll = $false }
-        if (-not $script:frameFile.ContainsKey('run_0' + $k)) { $runAll = $false }
     }
     foreach ($k in 0..3) {
+        if (-not $script:frameFile.ContainsKey('run_0' + $k)) { $runAll = $false }
+    }
+    foreach ($k in 0..7) {
         if (-not $walkAll) { $chains['walk_0' + $k] = @('stand_00') }
+    }
+    foreach ($k in 0..3) {
         if (-not $runAll) { $chains['run_0' + $k] = @($chains['walk_0' + $k]) }
     }
     $script:frameChain = $chains
@@ -1406,7 +1414,6 @@ function Update-DogAction([int]$step, [bool]$menuOpen) {
                 $t = 0
                 break
             }
-            $script:offY = @(0.0, -1.0, 0.0, -1.0)[([int][Math]::Floor($t / 2)) % 4]
         }
         'run' {
             if (Step-DogMove ((Get-MoveStep 'run') * $step)) {
@@ -1616,13 +1623,13 @@ function Get-DogFrameName {
     $wag = @(0, 1, 0, 2)
     $paddle = @(0, 1, 2, 1)
     switch ($script:dogAct) {
-        'walk' { return ('walk_0' + (([int][Math]::Floor($t / 2)) % 4)) }
+        'walk' { return ('walk_0' + (([int][Math]::Floor($t / 2)) % 8)) }
         'run' { return ('run_0' + ($t % 4)) }
         'summon' { return ('run_0' + ($t % 4)) }
         'chase' {
             if (-not $script:chaseSitting) {
                 if ($script:chaseRun) { return ('run_0' + ($t % 4)) }
-                return ('walk_0' + (([int][Math]::Floor($t / 2)) % 4))
+                return ('walk_0' + (([int][Math]::Floor($t / 2)) % 8))
             }
             $since = $t - $script:chaseSitTick
             if ($since -lt 18) { return ('stand_0' + $wag[$since % 4]) }
