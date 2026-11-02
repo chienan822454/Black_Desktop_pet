@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 # =============================================================================
-# 小黑桌寵 V1.0.1 - 小黑, a black Taiwanese dog desktop pet
+# 小黑桌寵 V1.0.2 - 小黑, a black Taiwanese dog desktop pet
 #   小黑 is a shy, sleepy and cuddly black Taiwanese mixed-breed dog who lives on the desktop.
 #   PowerShell 5.1 + Windows Forms, all in this one file; START_Black.cmd starts it.
 #   Safety:
@@ -19,7 +19,7 @@
 # =============================================================================
 param([string]$UpdateMode = '', [string]$UpdateDir = '', [int]$WaitPid = 0)
 $ErrorActionPreference = 'Stop'
-$script:appVersion = 'V1.0.1'
+$script:appVersion = 'V1.0.2'
 $script:appTitle = '小黑桌寵 ' + $script:appVersion
 
 # =============================================================================
@@ -290,8 +290,15 @@ $script:nightAwakeTicks = 2000    # at night: 2 minutes without attention and he
 $script:moodDecayTicks = 15000    # mood: a little lower for every 15 minutes without attention
 # Speeds in pixels per tick for a 250 px window at 100 % (multiplied by Get-PetUnit for other sizes and DPI).
 $script:walkSpeed = 4.6
-$script:runSpeed = 10.0
-$script:summonSpeed = 12.0
+$script:runSpeed = 15.0
+$script:summonSpeed = 18.0
+# Walking and running: walk_00..23 and run_00..15, two pictures per tick. With 動作更流暢 on, the timer runs every
+# 30 ms while he walks or runs: every second event is a half tick (Update-DogHalfTick) that shows the odd picture
+# and makes half a step. Off: the timer stays at 60 ms and only the even pictures are shown.
+$script:walkFrames = 24
+$script:runFrames = 16
+$script:halfTick = 0              # 1 while a half tick is shown
+$script:halfMoved = $false        # half a step was made since the last tick
 $script:flingMinSpeed = 20.0      # let go faster than this: thrown
 $script:flingMaxSpeed = 80.0
 $script:flingSlideSpeed = 6.0     # slower than this: skidding to a stop (slide_00)
@@ -323,18 +330,6 @@ $script:frameChainBase = [ordered]@{
     'blink_00'     = @('blink_00', 'stand_00')
     'blink_01'     = @('blink_01', 'blink_00', 'stand_00')
     'blink_02'     = @('blink_02', 'blink_00', 'stand_00')
-    'walk_00'      = @('walk_00', 'stand_00')
-    'walk_01'      = @('walk_01', 'stand_00')
-    'walk_02'      = @('walk_02', 'stand_00')
-    'walk_03'      = @('walk_03', 'stand_00')
-    'walk_04'      = @('walk_04', 'stand_00')
-    'walk_05'      = @('walk_05', 'stand_00')
-    'walk_06'      = @('walk_06', 'stand_00')
-    'walk_07'      = @('walk_07', 'stand_00')
-    'run_00'       = @('run_00', 'walk_00', 'stand_00')
-    'run_01'       = @('run_01', 'walk_01', 'stand_00')
-    'run_02'       = @('run_02', 'walk_02', 'stand_00')
-    'run_03'       = @('run_03', 'walk_03', 'stand_00')
     'sit_00'       = @('sit_00', 'stand_00')
     'lie_00'       = @('lie_00', 'stand_00')
     'sleep_00'     = @('sleep_00', 'lie_00', 'stand_00')
@@ -356,6 +351,13 @@ $script:frameChainBase = [ordered]@{
     'drag_02'      = @('drag_02', 'drag_00', 'walk_02', 'stand_00')
     'slide_00'     = @('slide_00', 'stand_00')
 }
+# The walking cycle walk_00..23 and the running cycle run_00..15 (running falls back to the walking pictures).
+foreach ($k in 0..($script:walkFrames - 1)) {
+    $script:frameChainBase[('walk_' + $k.ToString('00'))] = @(('walk_' + $k.ToString('00')), 'stand_00')
+}
+foreach ($k in 0..($script:runFrames - 1)) {
+    $script:frameChainBase[('run_' + $k.ToString('00'))] = @(('run_' + $k.ToString('00')), ('walk_' + ([int][Math]::Floor($k * 1.5)).ToString('00')), 'stand_00')
+}
 
 # -----------------------------------------------------------------------------
 # Settings: %APPDATA%\BlackPet\settings.txt (key=value lines) and mood.txt (0-100).
@@ -368,6 +370,7 @@ function Import-PetSettings {
     $script:nightSleepEnabled = $true
     $script:idleSleepEnabled = $true
     $script:updAuto = $true
+    $script:smoothMove = $true
     $script:updLast = [datetime]::MinValue
     if ([string]::IsNullOrEmpty($script:settingsFile)) { return }
     try {
@@ -389,6 +392,7 @@ function Import-PetSettings {
                 'nightsleep' { $script:nightSleepEnabled = $on }
                 'idlesleep' { $script:idleSleepEnabled = $on }
                 'autoupdate' { $script:updAuto = $on }
+                'smoothmove' { $script:smoothMove = $on }
                 'lastupdatecheck' {
                     $d = [datetime]::MinValue
                     if ([datetime]::TryParse($val, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$d)) { $script:updLast = $d }
@@ -413,6 +417,7 @@ function Save-PetSettings {
             ('nightsleep=' + [int]$script:nightSleepEnabled),
             ('idlesleep=' + [int]$script:idleSleepEnabled),
             ('autoupdate=' + [int]$script:updAuto),
+            ('smoothmove=' + [int]$script:smoothMove),
             ('lastupdatecheck=' + $script:updLast.ToString('s', [System.Globalization.CultureInfo]::InvariantCulture))
         )
         [System.IO.File]::WriteAllLines($script:settingsFile, [string[]]$lines, [System.Text.UTF8Encoding]::new($false))
@@ -677,17 +682,19 @@ function Import-DogPictures([bool]$first) {
     # A walking or running cycle with a picture missing would stutter: then the whole cycle uses the fallback.
     $walkAll = $true
     $runAll = $true
-    foreach ($k in 0..7) {
-        if (-not $script:frameFile.ContainsKey('walk_0' + $k)) { $walkAll = $false }
+    foreach ($k in 0..($script:walkFrames - 1)) {
+        if (-not $script:frameFile.ContainsKey('walk_' + $k.ToString('00'))) { $walkAll = $false }
     }
-    foreach ($k in 0..3) {
-        if (-not $script:frameFile.ContainsKey('run_0' + $k)) { $runAll = $false }
+    foreach ($k in 0..($script:runFrames - 1)) {
+        if (-not $script:frameFile.ContainsKey('run_' + $k.ToString('00'))) { $runAll = $false }
     }
-    foreach ($k in 0..7) {
-        if (-not $walkAll) { $chains['walk_0' + $k] = @('stand_00') }
+    if (-not $walkAll) {
+        foreach ($k in 0..($script:walkFrames - 1)) { $chains[('walk_' + $k.ToString('00'))] = @('stand_00') }
     }
-    foreach ($k in 0..3) {
-        if (-not $runAll) { $chains['run_0' + $k] = @($chains['walk_0' + $k]) }
+    if (-not $runAll) {
+        foreach ($k in 0..($script:runFrames - 1)) {
+            $chains[('run_' + $k.ToString('00'))] = @($chains[('walk_' + ([int][Math]::Floor($k * 1.5)).ToString('00'))])
+        }
     }
     $script:frameChain = $chains
     $script:breathByFrame = $script:frameFile.ContainsKey('breath_00')
@@ -1032,6 +1039,43 @@ function Get-MoveStep([string]$kind) {
     if ($kind -eq 'run') { $speed = $script:runSpeed }
     if ($kind -eq 'summon') { $speed = $script:summonSpeed }
     return ($speed * (Get-PetUnit))
+}
+
+function Get-MoveAmount([string]$kind, [int]$step) {
+    # How far to move this tick: half of the step was already made at the half tick before it (動作更流暢).
+    $n = [double]$step
+    if ($script:halfMoved) { $n = $n - 0.5 }
+    return ((Get-MoveStep $kind) * $n)
+}
+
+function Get-DogMoveKind {
+    # 'walk', 'run' or 'summon' while 小黑 walks or runs (動作更流暢 then shows a picture every 30 ms), else ''.
+    if ($script:isDragging -or [bool]$script:cms.Visible) { return '' }
+    if ($script:dogAct -eq 'walk' -or $script:dogAct -eq 'run' -or $script:dogAct -eq 'summon') { return $script:dogAct }
+    if ($script:dogAct -eq 'chase' -and -not $script:chaseSitting) {
+        if ($script:chaseRun) { return 'run' }
+        return 'walk'
+    }
+    return ''
+}
+
+function Update-DogHalfTick {
+    # 動作更流暢: the event between two ticks shows the next walking or running picture and makes half a step.
+    $kind = Get-DogMoveKind
+    if ($kind -eq '') { return }
+    $script:halfTick = 1
+    try {
+        if ($null -ne $script:moveTarget) {
+            [void](Step-DogMove ((Get-MoveStep $kind) * 0.5))
+            $script:halfMoved = $true
+        }
+        $script:offX = 0.0
+        $script:offY = 0.0
+        if ($kind -ne 'walk') { $script:offY = Get-RunBob $script:dogActTick }
+        Show-PetFrame
+    } finally {
+        $script:halfTick = 0
+    }
 }
 
 function Start-DogMove([string]$act, [System.Drawing.Point]$target, [string]$say) {
@@ -1409,23 +1453,23 @@ function Update-DogAction([int]$step, [bool]$menuOpen) {
     }
     switch ($script:dogAct) {
         'walk' {
-            if (Step-DogMove ((Get-MoveStep 'walk') * $step)) {
+            if (Step-DogMove (Get-MoveAmount 'walk' $step)) {
                 Stop-DogAction
                 $t = 0
                 break
             }
         }
         'run' {
-            if (Step-DogMove ((Get-MoveStep 'run') * $step)) {
+            if (Step-DogMove (Get-MoveAmount 'run' $step)) {
                 Stop-DogAction
                 $t = 0
                 break
             }
-            $script:offY = @(-3.0, 0.0, -3.0, 0.0)[$t % 4]
+            $script:offY = Get-RunBob $t
         }
         'summon' {
             if (($t % 8) -eq 0) { $script:moveTarget = Get-CursorSpot }
-            if (Step-DogMove ((Get-MoveStep 'summon') * $step)) {
+            if (Step-DogMove (Get-MoveAmount 'summon' $step)) {
                 # There: a happy hop next to you.
                 Set-DogFacingCursor
                 Add-DogMood 1
@@ -1433,7 +1477,7 @@ function Update-DogAction([int]$step, [bool]$menuOpen) {
                 $t = 0
                 break
             }
-            $script:offY = @(-3.0, 0.0, -3.0, 0.0)[$t % 4]
+            $script:offY = Get-RunBob $t
         }
         'chase' {
             if (-not $script:chaseEnabled) {
@@ -1461,8 +1505,8 @@ function Update-DogAction([int]$step, [bool]$menuOpen) {
             if ($script:chaseRun) { $kind = 'run' }
             $script:moveTarget = $spot
             $script:lastChaseMoveTick = $script:clockTick
-            [void](Step-DogMove ((Get-MoveStep $kind) * $step))
-            if ($script:chaseRun) { $script:offY = @(-3.0, 0.0, -3.0, 0.0)[$t % 4] }
+            [void](Step-DogMove (Get-MoveAmount $kind $step))
+            if ($script:chaseRun) { $script:offY = Get-RunBob $t }
         }
         'sit' { $script:offY = [Math]::Sin($script:clockTick / 12.0) * 0.8 }
         'lie' { $script:offY = [Math]::Sin($script:clockTick / 12.0) * 0.8 }
@@ -1617,19 +1661,38 @@ function Get-IdleFrameName {
     return 'stand_00'
 }
 
+function Get-MoveFrameIndex([int]$t, [int]$count) {
+    # Two pictures per tick: the tick shows the even one, the half tick after it (動作更流暢) the odd one.
+    return (((2 * $t) + $script:halfTick) % $count)
+}
+
+function Get-WalkFrameName([int]$t) {
+    return ('walk_' + (Get-MoveFrameIndex $t $script:walkFrames).ToString('00'))
+}
+
+function Get-RunFrameName([int]$t) {
+    return ('run_' + (Get-MoveFrameIndex $t $script:runFrames).ToString('00'))
+}
+
+function Get-RunBob([int]$t) {
+    # Running: up in the two flying moments of a stride (run_00, run_08), down when the paws land (run_04, run_12).
+    $k = Get-MoveFrameIndex $t $script:runFrames
+    return (-2.0 * (1.0 + [Math]::Cos((4.0 * [Math]::PI * $k) / $script:runFrames)))
+}
+
 function Get-DogFrameName {
     # The picture for this tick (a name of $script:frameChainBase; Get-FramePath finds the file).
     $t = $script:dogActTick
     $wag = @(0, 1, 0, 2)
     $paddle = @(0, 1, 2, 1)
     switch ($script:dogAct) {
-        'walk' { return ('walk_0' + (([int][Math]::Floor($t / 2)) % 8)) }
-        'run' { return ('run_0' + ($t % 4)) }
-        'summon' { return ('run_0' + ($t % 4)) }
+        'walk' { return (Get-WalkFrameName $t) }
+        'run' { return (Get-RunFrameName $t) }
+        'summon' { return (Get-RunFrameName $t) }
         'chase' {
             if (-not $script:chaseSitting) {
-                if ($script:chaseRun) { return ('run_0' + ($t % 4)) }
-                return ('walk_0' + (([int][Math]::Floor($t / 2)) % 8))
+                if ($script:chaseRun) { return (Get-RunFrameName $t) }
+                return (Get-WalkFrameName $t)
             }
             $since = $t - $script:chaseSitTick
             if ($since -lt 18) { return ('stand_0' + $wag[$since % 4]) }
@@ -1740,7 +1803,11 @@ function Update-PetTick {
     # One animation tick: 60 ms (240 ms while fast asleep; then it counts as 4 ticks).
     $script:tickAcc += [double]$script:timer.Interval / [double]$script:tickMs
     $step = [int][Math]::Floor($script:tickAcc + 0.0001)
-    if ($step -lt 1) { return }
+    if ($step -lt 1) {
+        # 動作更流暢: the event between two ticks.
+        Update-DogHalfTick
+        return
+    }
     $script:tickAcc -= $step
     $script:clockTick += $step
     $script:idleTick += $step
@@ -1760,13 +1827,19 @@ function Update-PetTick {
     Update-IdleAnimation $step
     if (-not $script:isDragging -and -not $menuOpen) { Update-DogHover $step }
     Update-DogAction $step $menuOpen
+    $script:halfMoved = $false
     if ($script:dogAct -eq '' -or ($script:dogAct -eq 'chase' -and $script:chaseSitting)) { Update-DogIdle $menuOpen }
     Show-PetFrame
     Update-WarmPictures
     # Power saving: fast asleep and nobody near him = 4 updates a second instead of 16.
     $calm = ($script:dogAct -eq 'sleep' -and ($script:dogActTick - $script:sleepSettle) -ge 30 -and -not $script:isDragging -and -not $script:hoverOn -and -not $menuOpen)
     $want = $script:tickMs
-    if ($calm) { $want = 4 * $script:tickMs }
+    if ($calm) {
+        $want = 4 * $script:tickMs
+    } elseif ($script:smoothMove -and (Get-DogMoveKind) -ne '') {
+        # 動作更流暢: a picture every 30 ms while he walks or runs.
+        $want = [int]($script:tickMs / 2)
+    }
     if ($script:timer.Interval -ne $want) { $script:timer.Interval = $want }
     # The update helper's result comes last, because it may ask a question.
     if ($null -ne $script:updProc -and $script:clockTick -ge $script:nextUpdWatch) {
@@ -2290,7 +2363,7 @@ try {
         @('歪頭', 'tilt', 0x2753, '小黑歪著頭看你', 60, 120, 200),
         @('聞聞', 'sniff', 0x1F443, '小黑低頭聞聞地上', 150, 100, 60),
         @('跑一跑', 'run', 0x1F3C3, '小黑跑到別的地方', 60, 140, 80),
-        @('撒嬌', 'cuddle', 0x1F495, '小黑撒嬌：耳朵往後、瞇著眼睛（滑鼠停在他身上一直摸，他會翻肚肚）', 215, 60, 90)
+        @('撒嬌', 'cuddle', 0x1F495, '小黑撒嬌：歪著頭、耳朵豎起來、瞇眼笑（滑鼠停在他身上一直摸，他會翻肚肚）', 215, 60, 90)
     )
     foreach ($ai in $actionList) {
         $item = New-PetMenuItem ([string]$ai[0]) ([string]$ai[3]) ([int]$ai[2]) ([int]$ai[4]) ([int]$ai[5]) ([int]$ai[6])
@@ -2344,7 +2417,7 @@ try {
     })
     foreach ($it in @($miRoam, $miChase, (New-Object System.Windows.Forms.ToolStripSeparator), $miCome)) { [void]$miGo.DropDownItems.Add($it) }
 
-    $miSet = New-PetMenuItem '設定' '小黑的大小和作息' 0x2699 110 110 120
+    $miSet = New-PetMenuItem '設定' '小黑的大小、動作和作息' 0x2699 110 110 120
     $miSize = New-PetMenuItem '尺寸' '小黑的大小（螢幕放不下時會縮到放得下的最大尺寸）' 0x1F4CF 90 110 160
     $sizeNames = @('迷你', '小', '一般', '大', '巨大')
     $sizeIcon = @(0.4, 0.5, 0.62, 0.74, 0.88)
@@ -2375,6 +2448,17 @@ try {
             Save-PetSettings
             if ($script:topMostWanted) { Set-Bubble '小黑會一直在最上面～' } else { Set-Bubble '好，小黑可以被別的視窗蓋住' }
         } catch { Write-PetError '永遠在最上層' $_ }
+    })
+    $miSmooth = New-PetMenuItem '動作更流暢' '走路和跑步時每 0.03 秒換一張圖，看起來更順（關掉是每 0.06 秒，電腦比較省力）' 0x2728 200 150 40
+    $miSmooth.CheckOnClick = $true
+    $miSmooth.Checked = $script:smoothMove
+    $miSmooth.Add_Click({
+        param($sender, $e)
+        try {
+            $script:smoothMove = [bool]$sender.Checked
+            Save-PetSettings
+            if ($script:smoothMove) { Set-Bubble '走路和跑步會更順～' } else { Set-Bubble '好，回到原本的速度' }
+        } catch { Write-PetError '動作更流暢' $_ }
     })
     $miNight = New-PetMenuItem '晚上自動睡' '晚上 11 點到早上 6 點小黑會去睡覺；被你叫醒會陪你玩一下，2 分鐘沒人理又睡回去' 0x1F319 200 160 30
     $miNight.CheckOnClick = $true
@@ -2412,7 +2496,7 @@ try {
             }
         } catch { Write-PetError '沒人理會自己睡' $_ }
     })
-    foreach ($it in @($miSize, $miTop, (New-Object System.Windows.Forms.ToolStripSeparator), $miNight, $miIdle)) { [void]$miSet.DropDownItems.Add($it) }
+    foreach ($it in @($miSize, $miTop, $miSmooth, (New-Object System.Windows.Forms.ToolStripSeparator), $miNight, $miIdle)) { [void]$miSet.DropDownItems.Add($it) }
 
     $miAbout = New-PetMenuItem '關於' ('小黑桌寵 ' + $script:appVersion) 0x2139 60 110 200
     $miInfo = New-PetMenuItem ('小黑介紹（' + $script:appVersion + '）…') '小黑是誰、怎麼跟他玩' 0x1F436 120 85 60
